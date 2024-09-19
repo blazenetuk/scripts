@@ -5,7 +5,7 @@ designed to be run by a Unix shell, a command-line interpreter to assist in
 automating, management and reporting tasks.
 
 # Prerequisites
-
+<br></br>
 **Bash (the Bourne Again SHell) - version 5.1+**
 
 **Linux/Unix System**
@@ -17,9 +17,9 @@ automating, management and reporting tasks.
 
 **The scripts are very basic and easy to use/customise**
 
-## Scripts
-<!-- SPACE -->
-
+<br></br>
+## **SURE - System Utilization and Risk Evaluation**
+<br></br>
 <!-- SPACE -->
 ### :basecamp: System Audit Report
 <!-- SPACE -->
@@ -34,7 +34,7 @@ Provides a basic snapshot of the server with the following information -
 :star: Top 10 CPU Usage
 :star: Open Files
  <!-- SPACE -->
- 
+ <br></br>
   <!-- SPACE -->
 ### :basecamp: System Security Report
  <!-- SPACE -->
@@ -54,6 +54,10 @@ Provides a basic snapshot of the following information from the server -
 :star: Current Services
 <!-- SPACE -->
 
+
+<br></br>
+## **ALERT - Auth Log and Event Reporting Tool**
+<br></br>
 <!-- SPACE -->
 ### :basecampy: Auth Log Report
 <!-- SPACE -->
@@ -66,7 +70,7 @@ Can be run via the crontab to produce the html report
 :star: a script snipplet is available to provide an admin with a copy of the `auth.log` from the
 log file directory
 <!-- SPACE -->
-
+<br></br>
 <!-- SPACE -->
 ### :basecampy: System Status Report
 <!-- SPACE -->
