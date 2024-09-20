@@ -88,4 +88,3 @@ The html report generates includes the following information and can be run via 
 :star: System Alert Entry's (Priority 1)
 :star: System Emergency Entry's (Priority 0)
 <!-- SPACE -->
-
