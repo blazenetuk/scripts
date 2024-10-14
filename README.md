@@ -20,11 +20,25 @@ This should be the directory and file name for the log output and errors
 > OUTPUT_HTML = ""
 Directory and file name for the HTML output to be generated too
 
-> INTERVAL_HOURS = <number>
-This should be the number of hours / Interval for the script to run
-
 > LAST_RUN_FILE = ""
 The directory and lock file name to use for tracking the last run time
+
+> MAIL_CONFIG = ""
+>
+This is configuration for the mail settings
+>
+`Enabled`
+TRUE would enable to use of mailing the output.
+FALSE would disable the option of mailing the outputted HTML file.
+>
+`recipient`
+This should be the email to send the html out/stats file to.
+>
+`Subject`
+This is the subject line of the email/stats email if enabled.
+>
+`mail_command`
+You can set the default mail command here.
 
 > [!IMPORTANT]
 > It is not recommend to change the `COMMANDS` section unless you are able to configure the out correctly.
