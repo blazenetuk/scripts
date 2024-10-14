@@ -1,23 +1,27 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import os
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime
+import logging
+import fcntl
 from jinja2 import Template
 
 # Configurable Options
 LOG_FILE = "/var/log/sysstatus_report.log"  # Log file for output and errors
 OUTPUT_HTML = "/var/log/sys_status_report.html"  # Output file for the HTML report
-INTERVAL_HOURS = 3  # Configurable interval (e.g., 3 hours)
-LAST_RUN_FILE = "/var/log/sysstatus_last_run"  # File to track the last run time
+LOCK_FILE = "/var/lock/sysstatus_report.lock"  # Lock file to prevent concurrent execution
+MAIL_CONFIG = {
+    'enabled': True,  # Enable/disable email sending
+    'recipient': 'reports@myserver.com',  # Recipient email address
+    'subject': 'System Status Report',  # Email subject
+    'mail_command': '/usr/bin/mail -a "Content-type: text/html" -s "{subject}" {recipient} < {html_file}'  # Command to send mail
+}
+
+# Commands to gather system data
 COMMANDS = {
     'failed_services': 'systemctl --type=service --state=failed',
-    'corrupted_packages': 'debsums -ac',
-    'journal_critical': 'journalctl -p 0 --no-pager -n 10',
-    'journal_alert': 'journalctl -p 1 --no-pager -n 10',
-    'journal_emergency': 'journalctl -p 2 --no-pager -n 10',
-    'netstat_tcp': 'netstat -at',
-    'netstat_udp': 'netstat -au',
+    'package_updates': 'apt list --upgradeable 2>/dev/null',
     'top_cpu_processes': 'ps auxf | sort -nr -k 3 | head -10',
     'top_mem_processes': 'ps auxf | sort -nr -k 4 | head -10',
     'no_owner_files': 'find / -xdev \( -nouser -o -nogroup \) -print',
@@ -26,273 +30,156 @@ COMMANDS = {
     'disk_usage': 'df -h',
     'iostat': 'iostat -x 1 5',
     'uptime': 'uptime',
-    'network_stats': 'ip -s link'
+    'network_stats_tcp': 'netstat -at',
+    'network_stats_udp': 'netstat -au',
+    'memory_usage': 'free -h',
+    'load_average': 'uptime | awk \'{print "Load average: " $10 " " $11 " " $12}\'',
+    'auth_log': 'grep "Failed password" /var/log/auth.log',  # Check for failed logins
+    'journal_crit': 'journalctl -p 0 -n 15 --no-pager',  # Priority 0 (Emergency)
+    'journal_alert': 'journalctl -p 1 -n 15 --no-pager',  # Priority 1 (Alert)
+    'journal_crit': 'journalctl -p 2 -n 15 --no-pager',  # Priority 2 (Critical)
+    'journal_error': 'journalctl -p 3 -n 15 --no-pager',  # Priority 3 (Error)
+    'journal_warning': 'journalctl -p 4 -n 15 --no-pager',  # Priority 4 (Warning)
 }
 
 # HTML Template for the report
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>System Status Report</title>
     <style>
-        body {
-            font-family: 'Arial', sans-serif;
-            background-color: #f4f7f9;
-            color: #333;
-            margin: 0;
-            padding: 0;
-        }
-        h1 {
-            background-color: #3a6ea5;
-            color: #fff;
-            text-align: center;
-            padding: 20px 0;
-            margin: 0;
-        }
-        h2 {
-            color: #3a6ea5;
-            border-bottom: 2px solid #3a6ea5;
-            padding-bottom: 5px;
-        }
-        .container {
-            max-width: 800px;
-            margin: 20px auto;
-            padding: 20px;
-            background-color: #fff;
-            box-shadow: 0 0 15px rgba(0, 0, 0, 0.1);
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 20px;
-        }
-        table, th, td {
-            border: 1px solid #ddd;
-        }
-        th {
-            background-color: #3a6ea5;
-            color: #fff;
-            padding: 10px;
-        }
-        td {
-            padding: 10px;
-            text-align: left;
-        }
-        tr:nth-child(even) {
-            background-color: #f2f7fa;
-        }
-        tr:hover {
-            background-color: #eaf2f9;
-        }
-        .no-data {
-            text-align: center;
-            padding: 10px;
-            color: #666;
-            background-color: #f4f7f9;
-        }
-        .footer {
-            text-align: center;
-            padding: 10px;
-            font-size: 0.9em;
-            color: #999;
-        }
+        body { font-family: Arial, sans-serif; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        table, th, td { border: 1px solid #000; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        h1, h2 { font-family: Arial, sans-serif; }
     </style>
 </head>
 <body>
     <h1>System Status Report for {{ hostname }}</h1>
-    <div class="container">
-        {% if failed_services %}
-        <h2>Failed Services</h2>
-        <table>
-            <tr><th>Service Name</th><th>Status</th></tr>
-            {% for service in failed_services %}
-            <tr><td>{{ service.name }}</td><td>{{ service.status }}</td></tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p class="no-data">No failed services found.</p>
-        {% endif %}
+    <p>Report generated on {{ current_time }}</p>
 
-        {% if corrupted_packages %}
-        <h2>Corrupted Packages</h2>
-        <table>
-            <tr><th>Package</th></tr>
-            {% for package in corrupted_packages %}
-            <tr><td>{{ package }}</td></tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p class="no-data">No corrupted packages found.</p>
-        {% endif %}
-
-        {% if top_cpu_processes %}
-        <h2>Top 10 CPU-Intensive Processes</h2>
-        <table>
-            <tr><th>PID</th><th>User</th><th>CPU %</th><th>Command</th></tr>
-            {% for proc in top_cpu_processes %}
-            <tr><td>{{ proc.pid }}</td><td>{{ proc.user }}</td><td>{{ proc.cpu }}</td><td>{{ proc.command }}</td></tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p class="no-data">No CPU-intensive processes found.</p>
-        {% endif %}
-
-        {% if top_mem_processes %}
-        <h2>Top 10 Memory-Intensive Processes</h2>
-        <table>
-            <tr><th>PID</th><th>User</th><th>Memory %</th><th>Command</th></tr>
-            {% for proc in top_mem_processes %}
-            <tr><td>{{ proc.pid }}</td><td>{{ proc.user }}</td><td>{{ proc.memory }}</td><td>{{ proc.command }}</td></tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p class="no-data">No memory-intensive processes found.</p>
-        {% endif %}
-
-        {% if no_owner_files %}
-        <h2>Files with No Owner or Group</h2>
-        <table>
-            <tr><th>File Path</th></tr>
-            {% for file in no_owner_files %}
-            <tr><td>{{ file }}</td></tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p class="no-data">No files with missing ownership found.</p>
-        {% endif %}
-
-        {% if setuid_setgid_files %}
-        <h2>SetUID and SetGID Files</h2>
-        <table>
-            <tr><th>File Path</th></tr>
-            {% for file in setuid_setgid_files %}
-            <tr><td>{{ file }}</td></tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p class="no-data">No SetUID or SetGID files found.</p>
-        {% endif %}
-
-        {% if world_writable_files %}
-        <h2>World-Writable Files</h2>
-        <table>
-            <tr><th>File Path</th></tr>
-            {% for file in world_writable_files %}
-            <tr><td>{{ file }}</td></tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p class="no-data">No world-writable files found.</p>
-        {% endif %}
-
-        {% if disk_usage %}
-        <h2>Disk Usage</h2>
-        <pre>{{ disk_usage }}</pre>
-        {% else %}
-        <p class="no-data">No disk usage information available.</p>
-        {% endif %}
-
-        {% if iostat %}
-        <h2>I/O Statistics</h2>
-        <pre>{{ iostat }}</pre>
-        {% else %}
-        <p class="no-data">No I/O statistics available.</p>
-        {% endif %}
-
-        {% if uptime %}
-        <h2>System Uptime and Load</h2>
-        <pre>{{ uptime }}</pre>
-        {% else %}
-        <p class="no-data">No uptime information available.</p>
-        {% endif %}
-
-        {% if network_stats %}
-        <h2>Network Interface Statistics</h2>
-        <pre>{{ network_stats }}</pre>
-        {% else %}
-        <p class="no-data">No network statistics available.</p>
-        {% endif %}
-
-    </div>
-
-    <div class="footer">
-        Report generated on {{ current_time }}
-    </div>
+    {% for section_title, section_data in sections.items() %}
+    <h2>{{ section_title }}</h2>
+    <table>
+        <tr><td><pre>{{ section_data }}</pre></td></tr>
+    </table>
+    {% endfor %}
 </body>
 </html>
 """
 
+def setup_logging():
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s:%(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    console = logging.StreamHandler()
+    console.setLevel(logging.ERROR)
+    formatter = logging.Formatter('%(asctime)s %(levelname)s:%(message)s')
+    console.setFormatter(formatter)
+    logging.getLogger('').addHandler(console)
+
 def run_command(command):
     """Run a shell command and return the output."""
-    result = subprocess.run(command, shell=True, capture_output=True, text=True)
-    return result.stdout.strip()
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            logging.error(f"Command failed: {command}\nError: {result.stderr.strip()}")
+            return f"Error: {result.stderr.strip()}"
+        return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        logging.error(f"Command timed out: {command}")
+        return "Error: Command timed out."
 
-def check_last_run():
-    """Check if the script has run within the last INTERVAL_HOURS."""
-    if os.path.exists(LAST_RUN_FILE):
-        with open(LAST_RUN_FILE, 'r') as f:
-            last_run = f.read().strip()
-        last_run_time = datetime.strptime(last_run, '%Y-%m-%d %H:%M:%S')
-        if datetime.now() - last_run_time < timedelta(hours=INTERVAL_HOURS):
-            return False
-    return True
+def gather_system_data():
+    """Gather system data and return it as a dictionary."""
+    data = {}
+    data['hostname'] = run_command("hostname")
+    data['current_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def update_last_run():
-    """Update the timestamp of the last run."""
-    with open(LAST_RUN_FILE, 'w') as f:
-        f.write(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    sections = {}
+    for section_name, command in COMMANDS.items():
+        sections[section_name.replace("_", " ").title()] = run_command(command)
 
-def generate_html_report(failed_services, corrupted_packages, top_cpu_processes, top_mem_processes, no_owner_files, setuid_setgid_files, world_writable_files, disk_usage, iostat, uptime, network_stats):
-    hostname = run_command("hostname")
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        'hostname': data['hostname'],
+        'current_time': data['current_time'],
+        'sections': sections
+    }
+
+def generate_html_report(data):
+    """Generate the HTML report using Jinja2."""
     template = Template(HTML_TEMPLATE)
-    html_content = template.render(
-        hostname=hostname,
-        current_time=current_time,
-        failed_services=failed_services,
-        corrupted_packages=corrupted_packages,
-        top_cpu_processes=top_cpu_processes,
-        top_mem_processes=top_mem_processes,
-        no_owner_files=no_owner_files,
-        setuid_setgid_files=setuid_setgid_files,
-        world_writable_files=world_writable_files,
-        disk_usage=disk_usage,
-        iostat=iostat,
-        uptime=uptime,
-        network_stats=network_stats
-    )
-    with open(OUTPUT_HTML, 'w') as f:
-        f.write(html_content)
+    html_content = template.render(data)
+
+    try:
+        with open(OUTPUT_HTML, 'w') as f:
+            f.write(html_content)
+        logging.info(f"Report generated: {OUTPUT_HTML}")
+    except Exception as e:
+        logging.error(f"Failed to write HTML report: {e}")
+
+def mail_report():
+    """Mail the generated HTML report."""
+    if MAIL_CONFIG['enabled']:
+        mail_command = MAIL_CONFIG['mail_command'].format(
+            subject=MAIL_CONFIG['subject'],
+            recipient=MAIL_CONFIG['recipient'],
+            html_file=OUTPUT_HTML
+        )
+        try:
+            result = subprocess.run(mail_command, shell=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                logging.error(f"Mail command failed: {result.stderr.strip()}")
+            else:
+                logging.info(f"Mail sent to {MAIL_CONFIG['recipient']}")
+        except Exception as e:
+            logging.error(f"Failed to send email: {e}")
+
+def acquire_lock(lock_file):
+    """Acquire a file lock to prevent concurrent executions."""
+    try:
+        lock_fd = open(lock_file, 'w')
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lock_fd
+        except IOError:
+            logging.error("Another instance of the script is running.")
+            sys.exit(1)
+    except IOError as e:
+        logging.error(f"Error opening lock file: {e}")
+        sys.exit(1)
+
+def release_lock(lock_fd):
+    """Release the lock and close the file descriptor."""
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+    except IOError as e:
+        logging.error(f"Error releasing lock: {e}")
 
 def main():
-    # Check if the script should run (every INTERVAL_HOURS)
-    if not check_last_run():
-        print("Skipping execution; it's not time yet.")
-        return
+    setup_logging()
 
-    # Fetch system data
-    failed_services = run_command(COMMANDS['failed_services'])
-    corrupted_packages = run_command(COMMANDS['corrupted_packages'])
-    top_cpu_processes = run_command(COMMANDS['top_cpu_processes'])
-    top_mem_processes = run_command(COMMANDS['top_mem_processes'])
-    no_owner_files = run_command(COMMANDS['no_owner_files'])
-    setuid_setgid_files = run_command(COMMANDS['setuid_setgid_files'])
-    world_writable_files = run_command(COMMANDS['world_writable_files'])
-    disk_usage = run_command(COMMANDS['disk_usage'])
-    iostat = run_command(COMMANDS['iostat'])
-    uptime = run_command(COMMANDS['uptime'])
-    network_stats = run_command(COMMANDS['network_stats'])
+    # Acquire lock to prevent concurrent runs
+    lock_fd = acquire_lock(LOCK_FILE)
 
-    # Generate report
-    generate_html_report(failed_services, corrupted_packages, top_cpu_processes, top_mem_processes, no_owner_files, setuid_setgid_files, world_writable_files, disk_usage, iostat, uptime, network_stats)
+    try:
+        # Gather system data
+        data = gather_system_data()
 
-    # Update last run time
-    update_last_run()
+        # Generate HTML report
+        generate_html_report(data)
 
-    print(f"Report generated: {OUTPUT_HTML}")
+        # Mail the report
+        mail_report()
+
+    finally:
+        release_lock(lock_fd)
 
 if __name__ == "__main__":
     main()
